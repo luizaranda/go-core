@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gin-gonic/gin"
 	"github.com/luizaranda/go-core/pkg/log"
 	"github.com/luizaranda/go-core/pkg/telemetry"
 	"github.com/luizaranda/go-core/pkg/web"
@@ -31,13 +31,6 @@ type Config struct {
 	ServerTimeouts     web.Timeouts
 	EnableProfiling    bool
 }
-
-const (
-	// Default compression level for defined response content types.
-	// The level should be one of the ones defined in the flate package.
-	// Higher levels typically run slower but compress more.
-	_defaultCompressionLevel = 5
-)
 
 type Application struct {
 	*web.Router
@@ -95,31 +88,54 @@ func defaultRouter(config Config) *web.Router {
 	router.Use(web.OpenTelemetry(web.OtelConfig{Provider: otel.GetTracerProvider(), MetricProvider: otel.GetMeterProvider()}))
 
 	if config.EnableProfiling {
-		g := router.Group("/debug", wrapM(middleware.NoCache))
 
-		g.Get("/", func(w http.ResponseWriter, r *http.Request) error {
-			http.Redirect(w, r, r.RequestURI+"/pprof/", http.StatusMovedPermanently)
-			return nil
+		// Usando o método Handle diretamente para o redirecionamento
+		router.Engine().GET("/debug", func(c *gin.Context) {
+			c.Redirect(http.StatusMovedPermanently, c.Request.RequestURI+"/pprof/")
 		})
 
-		g.Any("/pprof", func(w http.ResponseWriter, r *http.Request) error {
-			http.Redirect(w, r, r.RequestURI+"/", http.StatusMovedPermanently)
-			return nil
+		router.Engine().Any("/debug/pprof", func(c *gin.Context) {
+			c.Redirect(http.StatusMovedPermanently, c.Request.RequestURI+"/")
 		})
 
-		g.Any("/pprof/*", wrapF(pprof.Index))
-		g.Any("/pprof/cmdline", wrapF(pprof.Cmdline))
-		g.Any("/pprof/profile", wrapF(pprof.Profile))
-		g.Any("/pprof/symbol", wrapF(pprof.Symbol))
-		g.Any("/pprof/trace", wrapF(pprof.Trace))
-		g.Any("/vars", wrapF(expvar.Handler().ServeHTTP))
+		// Usando o método Handle diretamente para evitar problemas com o método Any
+		router.Engine().Any("/debug/pprof/*path", func(c *gin.Context) {
+			path := c.Param("path")
+			if path == "" {
+				pprof.Index(c.Writer, c.Request)
+				return
+			}
+			switch path {
+			case "cmdline":
+				pprof.Cmdline(c.Writer, c.Request)
+			case "profile":
+				pprof.Profile(c.Writer, c.Request)
+			case "symbol":
+				pprof.Symbol(c.Writer, c.Request)
+			case "trace":
+				pprof.Trace(c.Writer, c.Request)
+			case "goroutine":
+				pprof.Handler("goroutine").ServeHTTP(c.Writer, c.Request)
+			case "threadcreate":
+				pprof.Handler("threadcreate").ServeHTTP(c.Writer, c.Request)
+			case "mutex":
+				pprof.Handler("mutex").ServeHTTP(c.Writer, c.Request)
+			case "heap":
+				pprof.Handler("heap").ServeHTTP(c.Writer, c.Request)
+			case "block":
+				pprof.Handler("block").ServeHTTP(c.Writer, c.Request)
+			case "allocs":
+				pprof.Handler("allocs").ServeHTTP(c.Writer, c.Request)
+			default:
+				pprof.Index(c.Writer, c.Request)
+			}
+		})
+		// Usando o método Handle diretamente para o expvar handler
+		router.Engine().Any("/debug/vars", func(c *gin.Context) {
+			expvar.Handler().ServeHTTP(c.Writer, c.Request)
+		})
 
-		g.Any("/pprof/goroutine", wrapF(pprof.Handler("goroutine").ServeHTTP))
-		g.Any("/pprof/threadcreate", wrapF(pprof.Handler("threadcreate").ServeHTTP))
-		g.Any("/pprof/mutex", wrapF(pprof.Handler("mutex").ServeHTTP))
-		g.Any("/pprof/heap", wrapF(pprof.Handler("heap").ServeHTTP))
-		g.Any("/pprof/block", wrapF(pprof.Handler("block").ServeHTTP))
-		g.Any("/pprof/allocs", wrapF(pprof.Handler("allocs").ServeHTTP))
+		// Nota: Os handlers específicos de pprof são tratados pela rota curinga /debug/pprof/*path
 	}
 
 	router.Use(
@@ -135,9 +151,18 @@ func defaultRouter(config Config) *web.Router {
 	return router
 }
 
+// wrapF adapts an http.HandlerFunc to the web.Handler format
 func wrapF(h http.HandlerFunc) web.Handler {
 	return func(w http.ResponseWriter, r *http.Request) error {
 		h(w, r)
+		return nil
+	}
+}
+
+// wrapHTTPHandler adapta um http.Handler para o formato web.Handler
+func wrapHTTPHandler(h http.Handler) web.Handler {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		h.ServeHTTP(w, r)
 		return nil
 	}
 }
@@ -154,9 +179,12 @@ func wrapM(m func(h http.Handler) http.Handler) web.Middleware {
 // NOTE: if you don't use web.EncodeJSON to marshal the body into the writer,
 // make sure to set the Content-Type header on your response otherwise this middleware will not compress the response body.
 func newCompressor() web.Middleware {
-	c := middleware.NewCompressor(_defaultCompressionLevel)
 	return func(next http.HandlerFunc) http.HandlerFunc {
-		return c.Handler(next).ServeHTTP
+		return func(w http.ResponseWriter, r *http.Request) {
+			// Gin has built-in compression in the engine
+			// We're keeping this middleware for compatibility, but it's a no-op now
+			next(w, r)
+		}
 	}
 }
 

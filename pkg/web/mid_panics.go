@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 	"github.com/luizaranda/go-core/pkg/log"
 	"github.com/luizaranda/go-core/pkg/telemetry"
 )
@@ -24,7 +24,17 @@ func Panics() Middleware {
 
 					log.Error(r.Context(), "panic recover", log.Err(err))
 
-					routePattern := chi.RouteContext(r.Context()).RoutePattern()
+					// Tenta obter o contexto Gin, se disponível
+					var routePattern string
+
+					// Verifica se o contexto Gin está disponível no request
+					if gc, exists := r.Context().Value(gin.ContextKey).(*gin.Context); exists && gc != nil {
+						// No Gin, o padrão de rota é obtido através do FullPath()
+						routePattern = gc.FullPath()
+					} else {
+						// Fallback para compatibilidade
+						routePattern = r.URL.Path
+					}
 					tags := []string{
 						"method:" + r.Method,
 						"handler:" + telemetry.SanitizeMetricTagValue(routePattern),

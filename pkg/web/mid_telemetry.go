@@ -7,8 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gin-gonic/gin"
 )
 
 // Telemetry middleware simplifies tracing of incoming web requests by
@@ -19,7 +18,17 @@ import (
 func Telemetry(tracer telemetry.Client) Middleware {
 	return func(handler http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			routePattern := chi.RouteContext(r.Context()).RoutePattern()
+			// Tenta obter o contexto Gin, se disponível
+			var routePattern string
+
+			// Verifica se o contexto Gin está disponível no request
+			if gc, exists := r.Context().Value(gin.ContextKey).(*gin.Context); exists && gc != nil {
+				// No Gin, o padrão de rota é obtido através do FullPath()
+				routePattern = gc.FullPath()
+			} else {
+				// Fallback para compatibilidade
+				routePattern = r.URL.Path
+			}
 
 			// New Relic instrumentation
 			txName := fmt.Sprintf("%s (%s)", routePattern, r.Method)
@@ -37,9 +46,8 @@ func Telemetry(tracer telemetry.Client) Middleware {
 
 			r2 := r.WithContext(ctx)
 
-			// Wrap the http.ResponseWriter with a proxy for later response
-			// inspection.
-			w2 := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			// Criamos um ResponseWriter personalizado para capturar o status code
+			w2 := &responseWriter{w: w, status: http.StatusOK}
 
 			start := time.Now()
 			handler(w2, r2)
