@@ -148,3 +148,26 @@ func WithURLParams(t *testing.T, req *http.Request, params map[string]string) *h
 
 	return req
 }
+
+// QueryParam returns the value of the query parameter with the given key.
+// It returns an empty string if the parameter is not found.
+func QueryParam(r *http.Request, key string) string {
+	return r.URL.Query().Get(key)
+}
+
+// QueryParamInt returns the value of the query parameter with the given key as an int.
+// It returns 0 if the parameter is not found or is not a valid integer.
+// It returns an error if the parameter value is not an integer.
+func QueryParamInt(r *http.Request, key string) (int, error) {
+	value := QueryParam(r, key)
+	if value == "" {
+		return 0, nil
+	}
+
+	intValue, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+
+	return intValue, nil
+}
