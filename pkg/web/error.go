@@ -7,14 +7,12 @@ import (
 	"strings"
 )
 
-// Error represents a generic API error.
 type Error struct {
 	Status  int    `json:"-"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-// MarshalJSON customizes the JSON serialization for the Error struct.
 func (e *Error) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Code    string `json:"code"`
@@ -107,23 +105,4 @@ func ServiceUnavailableError(message string) error {
 // ServiceUnavailableErrorf returns a formatted 503 Service Unavailable error.
 func ServiceUnavailableErrorf(format string, args ...interface{}) error {
 	return NewErrorf(http.StatusServiceUnavailable, format, args...)
-}
-
-// ValidationError represents a validation error.
-type ValidationError struct {
-	// Anônima (embutida) a struct Error para herdar seus campos e métodos.
-	Error   `json:"-"`
-	Details map[string]string `json:"details,omitempty"`
-}
-
-// NewValidationError creates a new validation error.
-func NewValidationError(message string, details map[string]string) error {
-	return &ValidationError{
-		Error: Error{
-			Status:  http.StatusUnprocessableEntity,
-			Code:    "validation_error",
-			Message: message,
-		},
-		Details: details,
-	}
 }
