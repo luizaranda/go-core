@@ -3,11 +3,10 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"path"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
 )
 
 // Handler is a type that handles a http request within our framework.
@@ -108,22 +107,38 @@ var DefaultNotFoundHandler = func(w http.ResponseWriter, r *http.Request) {
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes.
 type Router struct {
-	mux        *chi.Mux
-	mw         []Middleware
-	errEncoder ErrorEncoder
-	errHandler ErrorHandler
+	engine          *gin.Engine
+	mw              []Middleware
+	errEncoder      ErrorEncoder
+	errHandler      ErrorHandler
+	notFoundHandler http.HandlerFunc
+}
+
+// Engine returns the underlying gin.Engine instance.
+func (r *Router) Engine() *gin.Engine {
+	return r.engine
 }
 
 // New instantiates a `Router`.
 func New() *Router {
-	mux := chi.NewRouter()
-	mux.NotFound(DefaultNotFoundHandler)
+	// Set gin to release mode by default
+	gin.SetMode(gin.ReleaseMode)
 
-	return &Router{
-		mux:        mux,
-		errEncoder: DefaultErrorEncoder,
-		errHandler: DefaultErrorHandler,
+	engine := gin.New()
+
+	router := &Router{
+		engine:          engine,
+		errEncoder:      DefaultErrorEncoder,
+		errHandler:      DefaultErrorHandler,
+		notFoundHandler: DefaultNotFoundHandler,
 	}
+
+	// Configure NoRoute handler
+	engine.NoRoute(func(c *gin.Context) {
+		router.notFoundHandler(c.Writer, c.Request)
+	})
+
+	return router
 }
 
 // Use appends a middleware handler to the middleware stack.
@@ -134,7 +149,10 @@ func (r *Router) Use(middlewares ...Middleware) {
 // NotFound sets a custom http.HandlerFunc for routing paths that could
 // not be found. The default 404 handler is `http.NotFound`.
 func (r *Router) NotFound(fn http.HandlerFunc) {
-	r.mux.NotFound(fn)
+	r.notFoundHandler = fn
+	r.engine.NoRoute(func(c *gin.Context) {
+		fn(c.Writer, c.Request)
+	})
 }
 
 // ErrorEncoder sets the given fn as ErrorEncoder.
@@ -160,31 +178,35 @@ func (r *Router) Group(p string, mw ...Middleware) *RouteGroup {
 // Method adds the route `pattern` that matches `method` http method to
 // execute the `handler` http.Handler wrapped by `mw`.
 func (r *Router) Method(method, pattern string, handler Handler, mw ...Middleware) {
-	r.mux.Method(method, pattern, r.handle(handler, mw...))
+	r.engine.Handle(method, pattern, r.ginHandler(handler, mw...))
 }
 
 // Any adds the route `pattern` that matches any http method to execute the `handler` http.Handler wrapped by `mw`.
 func (r *Router) Any(pattern string, handler Handler, mw ...Middleware) {
-	r.mux.Handle(pattern, r.handle(handler, mw...))
+	r.engine.Any(pattern, r.ginHandler(handler, mw...))
 }
 
-func (r *Router) handle(handler Handler, mw ...Middleware) http.Handler {
-	h := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		err := handler(w, req)
-		if err == nil {
-			return
-		}
+func (r *Router) ginHandler(handler Handler, mw ...Middleware) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Create a function that will be wrapped with middlewares
+		h := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			err := handler(w, req)
+			if err == nil {
+				return
+			}
 
-		r.errHandler(req.Context(), err)
-		r.errEncoder(req.Context(), err, w)
-	})
+			r.errHandler(req.Context(), err)
+			r.errEncoder(req.Context(), err, w)
+		})
 
-	// First wrap handler specific middleware around this handler.
-	h = wrapMiddleware(h, mw)
-	// Add the application's general middleware to the handler chain.
-	h = wrapMiddleware(h, r.mw)
+		// First wrap handler specific middleware around this handler.
+		h = wrapMiddleware(h, mw)
+		// Add the application's general middleware to the handler chain.
+		h = wrapMiddleware(h, r.mw)
 
-	return h
+		// Execute the wrapped handler
+		h(c.Writer, c.Request)
+	}
 }
 
 // Get is a shortcut for r.Method(http.MethodGet, pattern, handle, mw).
@@ -229,7 +251,7 @@ func (r *Router) Trace(pattern string, handler Handler, mw ...Middleware) {
 
 // ServeHTTP conforms to the http.Handler interface.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.mux.ServeHTTP(w, req)
+	r.engine.ServeHTTP(w, req)
 }
 
 // Route describes the details of a routing handler.
@@ -243,18 +265,16 @@ type Route struct {
 // Routes returns the routing tree in an easily traversable structure.
 func (r *Router) Routes() ([]Route, error) {
 	var routes []Route
-	walkFunc := func(method string, route string, handler http.Handler, mw ...func(http.Handler) http.Handler) error {
-		routes = append(routes, Route{
-			Method:      method,
-			Route:       route,
-			Handler:     handler,
-			Middlewares: mw,
-		})
-		return nil
-	}
 
-	if err := chi.Walk(r.mux, walkFunc); err != nil {
-		return nil, fmt.Errorf("generating routes: %v", err)
+	// Gin doesn't provide a way to walk through routes like Chi does
+	// This is a simplified implementation that returns registered routes
+	for _, routeInfo := range r.engine.Routes() {
+		routes = append(routes, Route{
+			Method: routeInfo.Method,
+			Route:  routeInfo.Path,
+			// We can't access the original handler or middlewares
+			// so these fields will be nil
+		})
 	}
 
 	return routes, nil

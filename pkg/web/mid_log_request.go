@@ -5,9 +5,19 @@ import (
 	"github.com/luizaranda/go-core/pkg/log"
 	"io"
 	"net/http"
-
-	"github.com/go-chi/chi/v5/middleware"
 )
+
+// wrappedResponseWriter é um wrapper para http.ResponseWriter que captura a resposta
+type wrappedResponseWriter struct {
+	http.ResponseWriter
+	buffer *bytes.Buffer
+}
+
+// Write implementa a interface http.ResponseWriter e captura a resposta
+func (w *wrappedResponseWriter) Write(b []byte) (int, error) {
+	w.buffer.Write(b)
+	return w.ResponseWriter.Write(b)
+}
 
 // LogRequestConfig allow configuring the way in which the LogRequest middleware
 // will behave.
@@ -47,15 +57,18 @@ func LogRequest(logger log.Logger, cfg LogRequestConfig) Middleware {
 				r.Body = io.NopCloser(io.TeeReader(origBody, reqBuf))
 			}
 
-			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			ww := &responseWriter{w: w, status: http.StatusOK}
 
 			var resBuf *bytes.Buffer
 			if cfg.IncludeResponse {
 				resBuf = bytes.NewBuffer(make([]byte, 0, 1024))
 
-				// Wrapped ResponseWriter allows settings an io.Writer as a Tee to
-				// which it will proxy
-				ww.Tee(resBuf)
+				// Criamos um wrapper para o responseWriter para capturar a resposta
+				originalWriter := ww.w
+				ww.w = &wrappedResponseWriter{
+					ResponseWriter: originalWriter,
+					buffer:         resBuf,
+				}
 			}
 
 			// Execute wrapped handlers with our wrapped ResponseWriter.

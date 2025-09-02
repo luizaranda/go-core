@@ -4,8 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gin-gonic/gin"
 	otelcontrib "go.opentelemetry.io/contrib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -21,6 +20,30 @@ const (
 	_durationMetricName  = "http.server.duration"
 	_unitKey             = attribute.Key("unit")
 )
+
+// responseWriter é um wrapper para http.ResponseWriter que captura o status code
+type responseWriter struct {
+	w      http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) Header() http.Header {
+	return rw.w.Header()
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	return rw.w.Write(b)
+}
+
+func (rw *responseWriter) WriteHeader(statusCode int) {
+	rw.status = statusCode
+	rw.w.WriteHeader(statusCode)
+}
+
+// Status retorna o status code armazenado
+func (rw *responseWriter) Status() int {
+	return rw.status
+}
 
 type OtelConfig struct {
 	Propagator     propagation.TextMapPropagator
@@ -64,15 +87,19 @@ func OpenTelemetry(cfg OtelConfig) Middleware {
 
 			// extract tracing header using propagator
 			ctx := cfg.Propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-			// create span, based on specification, we need to set already known attributes
-			// when creating the span, the only thing missing here is HTTP route pattern since
-			// in go-chi/chi route pattern could only be extracted once the request is executed
-			// check here for details:
-			//
-			// https://github.com/go-chi/chi/issues/150#issuecomment-278850733
-			//
-			// if we have access to chi routes, we could extract the route pattern beforehand.
-			routePattern := chi.RouteContext(r.Context()).RoutePattern()
+
+			// Tenta obter o contexto Gin, se disponível
+			var routePattern string
+
+			// Verifica se o contexto Gin está disponível no request
+			if gc, exists := r.Context().Value(gin.ContextKey).(*gin.Context); exists && gc != nil {
+				// No Gin, o padrão de rota é obtido através do FullPath()
+				routePattern = gc.FullPath()
+			} else {
+				// Fallback para compatibilidade
+				routePattern = r.URL.Path
+			}
+
 			ctx, span := cfg.tracer.Start(
 				ctx, routePattern,
 				trace.WithAttributes(semconv.NetAttributesFromHTTPRequest("tcp", r)...),
@@ -87,13 +114,12 @@ func OpenTelemetry(cfg OtelConfig) Middleware {
 
 			r2 := r.WithContext(ctx)
 
-			// Wrap the http.ResponseWriter with a proxy for later response
-			// inspection.
-			w2 := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
-			handler(w2, r2)
+			// Criamos um ResponseWriter personalizado para capturar o status code
+			respWriter := &responseWriter{w: w, status: http.StatusOK}
+			handler(respWriter, r2)
 
 			// set status code attribute
-			status := w2.Status()
+			status := respWriter.status
 			span.SetAttributes(semconv.HTTPStatusCodeKey.Int(status))
 
 			// set span status
@@ -103,7 +129,7 @@ func OpenTelemetry(cfg OtelConfig) Middleware {
 			// metrics middleware
 			attrs := semconv.HTTPServerMetricAttributesFromHTTPRequest("", r)
 			attrs = append(attrs,
-				semconv.HTTPRouteKey.String(chi.RouteContext(r.Context()).RoutePattern()),
+				semconv.HTTPRouteKey.String(routePattern),
 				semconv.HTTPStatusCodeKey.Int(status),
 
 				// add unit to metrics attributes

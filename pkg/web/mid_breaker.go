@@ -2,8 +2,6 @@ package web
 
 import (
 	"net/http"
-
-	"github.com/go-chi/chi/v5/middleware"
 )
 
 // BreakerValidator is a function that determines if a status code written to a
@@ -33,7 +31,7 @@ func Breaker(cb CircuitBreaker, validator BreakerValidator) Middleware {
 				return
 			}
 
-			w2 := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			w2 := &responseWriter{w: w, status: http.StatusOK}
 
 			handler(w2, r)
 
